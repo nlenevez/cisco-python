@@ -1,0 +1,11 @@
+import sys
+import csv
+
+filename = str(sys.argv[1])
+
+with open(filename, 'rb') as csvfile:
+        contents = csv.reader(csvfile,delimiter=',')
+        for vlan in contents:
+                print "vlan {}".format(vlan[0])
+                print " name u-tenant4-{}-v{}".format(vlan[1],vlan[0])
+                print "!"
