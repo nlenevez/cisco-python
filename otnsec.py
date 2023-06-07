@@ -4,10 +4,16 @@ from ipaddress import IPv4Network
 otnsecPolicy = (
         "otnsec policy OTNSECPOL\n"
         "otnsec policy OTNSECPOL cipher-suite AES-GCM-256\n"
+        "otnsec policy OTNSECPOL security-policy must-secure\n"
         "otnsec policy OTNSECPOL sak-rekey-interval 604800\n"
         "\n"
         "ikev2 policy IKEV2POLICY\n"
         "ikev2 policy IKEV2POLICY proposal IKEV2PROPOSAL\n"
+        "\n"
+        "ikev2 proposal IKEV2PROPOSAL\n"
+        "ikev2 proposal IKEV2PROPOSAL prf sha-512\n"
+        "ikev2 proposal IKEV2PROPOSAL dh-group 21\n"
+        "ikev2 proposal IKEV2PROPOSAL encryption aes-gcm-256\n"
         )
 
 otnsecKey = secrets.token_hex(32)
@@ -29,14 +35,14 @@ interfaceBshort = format(interfaceB.replace('/',''))
 
 gccConfigA = (
         "controller ODU4{}/1 gcc2\n"
-        "interface GCC{}/1 description gcc to {}\n"
-        "interface GCC{}/1 ipv4 address {} {}\n"
+        "interface GCC2{}/1 description gcc to {}\n"
+        "interface GCC2{}/1 ipv4 address {} {}\n"
         ).format(interfaceA, interfaceA, hostB, interfaceA, gccipA, gccsubnet)
 
 gccConfigB = (
         "controller ODU4{}/1 gcc2\n"
-        "interface GCC{}/1 description gcc to {}\n"
-        "interface GCC{}/1 ipv4 address {} {}\n"
+        "interface GCC2{}/1 description gcc to {}\n"
+        "interface GCC2{}/1 ipv4 address {} {}\n"
         ).format(interfaceB, interfaceB, hostA, interfaceB, gccipB, gccsubnet)
 
 keyringA = (
@@ -55,16 +61,16 @@ keyringB = (
 
 ikev2profileA = (
         "ikev2 profile IKEV2PROF_{}_{}\n"
-        "ikev2 profile IKEv2PROF_{}_{} match identity remote address {} {}\n"
-        "ikev2 profile IKEv2PROF_{}_{} keyring keyOTNSEC\n"
-        "ikev2 profile IKEv2PROF_{}_{} lifetime 28800\n"
+        "ikev2 profile IKEV2PROF_{}_{} match identity remote address {} {}\n"
+        "ikev2 profile IKEV2PROF_{}_{} keyring keyOTNSEC\n"
+        "ikev2 profile IKEV2PROF_{}_{} lifetime 28800\n"
         ).format(hostB, interfaceBshort, hostB, interfaceBshort, gccipB, gccsubnet, hostB, interfaceBshort, hostB, interfaceBshort)
 
 ikev2profileB = (
         "ikev2 profile IKEV2PROF_{}_{}\n"
-        "ikev2 profile IKEv2PROF_{}_{} match identity remote address {} {}\n"
-        "ikev2 profile IKEv2PROF_{}_{} keyring keyOTNSEC\n"
-        "ikev2 profile IKEv2PROF_{}_{} lifetime 28800\n"
+        "ikev2 profile IKEV2PROF_{}_{} match identity remote address {} {}\n"
+        "ikev2 profile IKEV2PROF_{}_{} keyring keyOTNSEC\n"
+        "ikev2 profile IKEV2PROF_{}_{} lifetime 28800\n"
         ).format(hostA, interfaceAshort, hostA, interfaceAshort, gccipA, gccsubnet, hostA, interfaceAshort, hostA, interfaceAshort)
 
 interfaceConfigA=""
