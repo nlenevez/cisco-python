@@ -2,8 +2,8 @@ import re
 import sys
 
 def generate_no_route_map_commands(config_text):
-    # Find all route-map blocks and extract (name, action)
-    route_map_blocks = re.findall(r'(route-map\s+(\S+)\s+(permit|deny)[\s\S]*?)(?=\nroute-map|\Z)', config_text)
+    # Find all route-map blocks and extract (name, action or sequence)
+    route_map_blocks = re.findall(r'(route-map\s+(\S+)\s+(permit|deny|\d+)[\s\S]*?)(?=\nroute-map|\Z)', config_text)
     route_map_instances = [(match[1], match[2]) for match in route_map_blocks]
 
     # Build a list of all lines that might reference route-maps
@@ -11,12 +11,20 @@ def generate_no_route_map_commands(config_text):
     referenced_names = set()
 
     for line in lines:
+        line = line.strip()
+
+        # Skip actual route-map definitions
+        if re.match(r'^route-map\s+\S+\s+(permit|deny|\d+)', line):
+            continue
+
+        # Skip template peer-policy definitions (NX-OS style)
+        if re.search(r'\btemplate\s+peer-policy\b', line):
+            continue
+
+        # Check for valid reference patterns
         for name, _ in route_map_instances:
-            # Skip actual route-map definitions
-            if line.strip().startswith(f'route-map {name}'):
-                continue
-            # Match common reference patterns and embedded ones like BGP peer-policy
-            if re.search(rf'\broute-map\s+{re.escape(name)}\b', line):
+            # Match route-map references in various NX-OS contexts
+            if re.search(rf'\b(match|set)?\s*route-map\s+{re.escape(name)}\b', line):
                 referenced_names.add(name)
 
     # Generate 'no route-map' commands for unreferenced route-map instances
