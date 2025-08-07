@@ -15,7 +15,7 @@ def generate_no_route_map_commands(config_text):
             # Skip actual route-map definitions
             if line.strip().startswith(f'route-map {name}'):
                 continue
-            # Check for common reference patterns
+            # Match common reference patterns and embedded ones like BGP peer-policy
             if re.search(rf'\broute-map\s+{re.escape(name)}\b', line):
                 referenced_names.add(name)
 
