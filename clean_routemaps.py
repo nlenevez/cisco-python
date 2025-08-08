@@ -34,7 +34,7 @@ def generate_no_route_map_commands(config_text):
     for name, action in route_map_instances:
         key = (name, action)
         if name not in referenced_names and key not in seen:
-            no_commands.append(f'no route-map {name} {action}')
+            no_commands.append(f'no route-map {name}')
             seen.add(key)
 
     return '\n'.join(no_commands)
