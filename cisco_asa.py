@@ -1,4 +1,5 @@
 import re
+import sys
 from collections import defaultdict
 
 def parse_asa_config(file_path):
@@ -12,9 +13,6 @@ def parse_asa_config(file_path):
     acl_pattern = re.compile(r'access-list\s+(\S+)\s+extended\s+(permit|deny)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(\S*)')
     object_group_pattern = re.compile(r'object-group\s+(network|service)\s+(\S+)')
     object_pattern = re.compile(r'object\s+(network|service)\s+(\S+)')
-
-    current_object_group = None
-    current_object = None
 
     for line in config_lines:
         line = line.strip()
@@ -47,12 +45,12 @@ def parse_asa_config(file_path):
         # Match object-group definitions
         og_match = object_group_pattern.match(line)
         if og_match:
-            current_object_group = og_match.group(2)
+            pass  # Extend here if you want to store object-group definitions
 
         # Match object definitions
         obj_match = object_pattern.match(line)
         if obj_match:
-            current_object = obj_match.group(2)
+            pass  # Extend here if you want to store object definitions
 
     return access_lists, objects
 
@@ -66,8 +64,11 @@ def print_acl_objects(access_lists, objects):
         for obj in objects[acl_name]:
             print(f"  {obj}")
 
-# Example usage
 if __name__ == "__main__":
-    config_file_path = 'asa_config.txt'  # Replace with your actual file path
+    if len(sys.argv) != 2:
+        print("Usage: python asa_acl_object_analyzer.py <asa_config_file>")
+        sys.exit(1)
+
+    config_file_path = sys.argv[1]
     access_lists, objects = parse_asa_config(config_file_path)
     print_acl_objects(access_lists, objects)
