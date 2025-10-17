@@ -1,0 +1,81 @@
+---
+- name: "PLAY 1: Backup ASA configs and route tables"
+  hosts: core_firewalls
+  connection: network_cli
+  gather_facts: no
+  tasks:
+    - name: "TASK 1: Get running-config from contexts"
+      asa_command:
+        context: "{{ asa_context }}"
+        commands: "show running-config"
+      register: context_config
+
+    - name: "TASK 2: Retrieve data and mgmt-only route tables from contexts"
+      asa_command:
+        context: "{{ asa_context }}"
+        commands: 
+          - "show route"
+          - "show route management-only"
+          - "show ip"
+      register: context_route_table
+
+    - name: "TASK 3: Export access-lists data from contexts (this can take a LONG time...)"
+      asa_command:
+        context: "{{ asa_context }}"
+        commands:
+          - "show access-list"
+      register: context_access_lists
+
+    - name: "TASK 4: Copy running_config to configs directory"
+      copy:
+        content: "{{ context_config.stdout[0] }}\n"
+        dest: "configs/{{ inventory_hostname }}.txt"
+
+    - name: "TASK 5: Save route tables to routes directory"
+      copy:
+        content: "{{ context_route_table.stdout[0] }}\n\n{{ context_route_table.stdout[1] }}\n\n{{ context_route_table.stdout[2] }}\n"
+        dest: "routes/{{ inventory_hostname }}.txt"
+
+    - name: "TASK 6: Save access-list outputs to acls directory"
+      copy:
+        content: "{{ context_access_lists.stdout[0] }}\n"
+        dest: "acls/{{ inventory_hostname }}.txt"
+
+- name: "PLAY 2: Backup ASA configs and route tables"
+  hosts: edge_firewalls
+  connection: network_cli
+  gather_facts: no
+  tasks:
+    - name: "TASK 1: Get running-config"
+      asa_command:
+        commands: "show running-config"
+      register: running_config
+
+    - name: "TASK 2: Retrieve data and mgmt-only route tables"
+      asa_command:
+        commands:
+          - "show route"
+          - "show route management-only"
+          - "show ip"
+      register: route_table
+
+    - name: "TASK 3: Export access-lists data from contexts (this can take a LONG time...)"
+      asa_command:
+        commands:
+          - "show access-list"
+      register: edge_access_lists
+
+    - name: "TASK 4: Copy running_config to configs directory"
+      copy:
+        content: "{{ running_config.stdout[0] }}\n"
+        dest: "configs/{{ inventory_hostname }}.txt"
+
+    - name: "TASK 5: Save route tables to routes directory"
+      copy:
+        content: "{{ route_table.stdout[0] }}\n\n{{ route_table.stdout[1] }}\n\n{{ route_table.stdout[2] }}\n"
+        dest: "routes/{{ inventory_hostname }}.txt"
+
+    - name: "TASK 6: Save access-list outputs to acls directory"
+      copy:
+        content: "{{ edge_access_lists.stdout[0] }}\n"
+        dest: "acls/{{ inventory_hostname }}.txt"
