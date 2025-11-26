@@ -1,0 +1,4 @@
+
+Device,Tunnel ID,Local IP MTU,VRF,Remote Device,Remote Tunnel ID,Remote IP MTU,Remote VRF,MTU Match,Ping Result
+{% for row in report_rows %}
+{{ row.device }},Tunnel{{ row.tunnel_id }},{{ row.local_mtu }},{{ row.local_vrf }},{{ row.remote_device }},Tunnel{{ row.remote_tunnel_id }},{{ row.remote_mtu }},{{ row.remote_vrf }},{{ row.mtu_match }},{{ row.ping_result }}
