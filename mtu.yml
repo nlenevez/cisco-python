@@ -1,0 +1,143 @@
+
+---
+- name: Validate Tunnel MTUs and Connectivity
+  hosts: iosxe_routers
+  gather_facts: no
+  connection: network_cli
+
+  vars:
+    report_file: "/tmp/tunnel_mtu_report.csv"
+
+  tasks:
+    - name: Get Tunnel configs
+      ios_command:
+        commands:
+          - show running-config | section interface Tunnel
+      register: tunnel_config
+
+    - name: Get Tunnel IPs
+      ios_command:
+        commands:
+          - show ip interface brief | include Tunnel
+      register: tunnel_ips
+
+    - name: Parse Tunnel details (MTU, VRF, source, destination)
+      set_fact:
+        tunnel_info: >-
+          {{
+            tunnel_config.stdout[0] | regex_findall(
+              'interface Tunnel(\\d+)\\n(?: .+\\n)*?ip mtu (\\d+)(?:\\n vrf forwarding (\\S+))?.*?tunnel source (\\S+).*?tunnel destination (\\S+)'
+            )
+          }}
+
+    - name: Parse Tunnel IPs
+      set_fact:
+        tunnel_ip_map: >-
+          {{
+            tunnel_ips.stdout[0] | regex_findall('Tunnel(\\d+)\\s+(\\S+)')
+          }}
+
+    - name: Combine Tunnel data
+      set_fact:
+        device_tunnels: >-
+          {{
+            tunnel_info | map('list') | list | zip(tunnel_ip_map) | map('flatten') | list
+          }}
+      # Each entry: [TunnelID, ip-mtu, vrf, source, destination, tunnel-ip]
+
+    - name: Save device tunnel info
+      set_fact:
+        all_tunnels: "{{ (hostvars.localhost.all_tunnels | default([])) + [{'device': inventory_hostname, 'tunnels': device_tunnels}] }}"
+      delegate_to: localhost
+
+- name: Validate MTUs and Ping
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Initialize report data
+      set_fact:
+        report_rows: []
+
+    - name: Build tunnel pairs
+      set_fact:
+        tunnel_pairs: >-
+          {{
+            all_tunnels | community.general.json_query('[].tunnels[]') | list
+          }}
+
+    - name: Process tunnels and run ping tests
+      vars:
+        results: []
+      loop: "{{ all_tunnels }}"
+      loop_control:
+        label: "{{ item.device }}"
+      tasks:
+        - name: For each tunnel in device
+          vars:
+            device: "{{ item.device }}"
+          loop: "{{ item.tunnels }}"
+          loop_control:
+            label: "{{ device }} Tunnel {{ item[0] }}"
+          tasks:
+            - name: Find remote tunnel
+              set_fact:
+                remote_tunnel: >-
+                  {{
+                    tunnel_pairs | selectattr('3', 'equalto', item[4]) | list | first
+                  }}
+              when: item[4] is defined
+
+            - name: Run ping test from local device
+              ios_command:
+                commands:
+                  - >-
+                    {% if item[2] is defined %}
+                    ping vrf {{ item[2] }} {{ remote_tunnel[5] }} size {{ item[1] }} df-bit repeat 5
+                    {% else %}
+                    ping {{ remote_tunnel[5] }} size {{ item[1] }} df-bit repeat 5
+                    {% endif %}
+              delegate_to: "{{ device }}"
+              register: ping_result
+              when: remote_tunnel is defined
+
+            - name: Parse ping success
+              set_fact:
+                ping_status: "{{ 'Pass' if ping_result is defined and 'Success rate is 100 percent' in ping_result.stdout[0] else 'Fail' }}"
+              when: remote_tunnel is defined
+
+            - name: Append row to report
+              set_fact:
+                report_rows: "{{ report_rows + [ {
+                  'device': device,
+                  'tunnel_id': item[0],
+                  'local_mtu': item[1],
+                  'local_vrf': item[2]|default('none'),
+                  'remote_device': remote_tunnel[6]|default('unknown'),
+                  'remote_tunnel_id': remote_tunnel[0]|default('unknown'),
+                  'remote_mtu': remote_tunnel[1]|default('unknown'),
+                  'remote_vrf': remote_tunnel[2]|default('none'),
+                  'mtu_match': 'Yes' if item[1] == remote_tunnel[1]|default('') else 'No',
+                  'ping_result': ping_status|default('N/A')
+                }] }}"
+              when: remote_tunnel is defined
+            - name: Handle missing remote tunnel
+              set_fact:
+                report_rows: "{{ report_rows + [ {
+                  'device': device,
+                  'tunnel_id': item[0],
+                  'local_mtu': item[1],
+                  'local_vrf': item[2]|default('none'),
+                  'remote_device': 'Not Found',
+                  'remote_tunnel_id': 'N/A',
+                  'remote_mtu': 'N/A',
+                  'remote_vrf': 'N/A',
+                  'mtu_match': 'N/A',
+                  'ping_result': 'N/A'
+                }] }}"
+              when: remote_tunnel is not defined
+
+    - name: Render CSV report
+      template:
+        src: tunnel_report.j2
+        dest: "{{ report_file }}"
