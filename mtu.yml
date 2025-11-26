@@ -35,7 +35,7 @@
         tunnel_info: >-
           {{
             filtered_config | regex_findall(
-              'interface Tunnel(\\d+)[\\s\\S]*?(?:ip mtu (\\d+))?[\\s\\S]*?(?:vrf forwarding (\\S+))?[\\s\\S]*?tunnel source (\\S+)[\\s\\S]*?tunnel destination (\\S+)'
+              'interface Tunnel(\\d+)[\\s\\S]*?(?:ip mtu (\\d+))?[\\s\\S]*?(?:ip vrf forwarding (\\S+))?[\\s\\S]*?tunnel source (\\S+)[\\s\\S]*?tunnel destination (\\S+)'
             )
           }}
 
@@ -60,9 +60,9 @@
           {{
             tunnel_info | map('list') | list
             | map('map', 'default', '') | list
-            | map('zip', ['id','mtu','vrf','src','dst']) | list
+            | map('map', 'zip', ['id','mtu','vrf','src','dst']) | list
             | map('map', 'combine') | list
-            | map('combine', {'mtu': default_mtu}, attribute='mtu') | list
+            | map('map', 'combine', {'mtu': default_mtu}, attribute='mtu') | list
             | zip(tunnel_ip_map) | map('flatten') | list
           }}
 
@@ -125,7 +125,6 @@
       vars:
         device: "{{ item.0.device }}"
         tunnel: "{{ item.1 }}"
-      when: item.1 | length > 0
 
     - name: Append row to report
       set_fact:
@@ -152,3 +151,4 @@
     - name: Render CSV report
       template:
         src: tunnel_report.j2
+        dest: "{{ report_file }}"
