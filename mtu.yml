@@ -16,7 +16,7 @@
           - show running-config | section interface Tunnel
       register: tunnel_config
 
-    - name: Use raw config for parsing (skip split/join)
+    - name: Use raw config for parsing
       set_fact:
         filtered_config: "{{ tunnel_config.stdout[0] }}"
 
@@ -34,7 +34,7 @@
       debug:
         var: tunnel_ips.stdout[0]
 
-    - name: Parse Tunnel details (flexible regex)
+    - name: Parse Tunnel details (regex-based)
       set_fact:
         tunnel_info: >-
           {{
@@ -49,10 +49,7 @@
 
     - name: Parse Tunnel IPs
       set_fact:
-        tunnel_ip_map: >-
-          {{
-            tunnel_ips.stdout[0] | regex_findall('Tunnel(\\d+)\\s+(\\S+)')
-          }}
+        tunnel_ip_map: "{{ tunnel_ips.stdout[0] | regex_findall('Tunnel(\\d+)\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)') }}"
 
     - name: Debug parsed tunnel_ip_map
       debug:
