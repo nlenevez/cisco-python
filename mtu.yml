@@ -16,9 +16,9 @@
           - show running-config | section interface Tunnel
       register: tunnel_config
 
-    - name: Filter out DMVPN tunnels
+    - name: Use raw config for parsing (skip split/join)
       set_fact:
-        filtered_config: "{{ tunnel_config.stdout[0].split('\ninterface ') | reject('search', 'tunnel mode gre multipoint') | map('regex_replace', '^', 'interface ') | join('\n') }}"
+        filtered_config: "{{ tunnel_config.stdout[0] }}"
 
     - name: Debug filtered config
       debug:
@@ -29,6 +29,10 @@
         commands:
           - show ip interface brief | include Tunnel
       register: tunnel_ips
+
+    - name: Debug tunnel IP output
+      debug:
+        var: tunnel_ips.stdout[0]
 
     - name: Parse Tunnel details (flexible regex)
       set_fact:
