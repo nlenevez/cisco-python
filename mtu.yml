@@ -7,6 +7,7 @@
 
   vars:
     report_file: "/tmp/tunnel_mtu_report.csv"
+    default_mtu: 1476   # Fallback MTU if not found
 
   tasks:
     - name: Get Tunnel configs
@@ -29,12 +30,12 @@
           - show ip interface brief | include Tunnel
       register: tunnel_ips
 
-    - name: Parse Tunnel details (improved regex)
+    - name: Parse Tunnel details (flexible regex)
       set_fact:
         tunnel_info: >-
           {{
             filtered_config | regex_findall(
-              'interface Tunnel(\\d+)\\n(?: .+\\n)*?(?:ip mtu (\\d+))?.*?(?:vrf forwarding (\\S+))?.*?tunnel source (\\S+).*?tunnel destination (\\S+)'
+              'interface Tunnel(\\d+)[\\s\\S]*?(?:ip mtu (\\d+))?[\\s\\S]*?(?:vrf forwarding (\\S+))?[\\s\\S]*?tunnel source (\\S+)[\\s\\S]*?tunnel destination (\\S+)'
             )
           }}
 
@@ -53,11 +54,16 @@
       debug:
         var: tunnel_ip_map
 
-    - name: Combine Tunnel data
+    - name: Combine Tunnel data and apply default MTU
       set_fact:
         device_tunnels: >-
           {{
-            tunnel_info | map('list') | list | zip(tunnel_ip_map) | map('flatten') | list
+            tunnel_info | map('list') | list
+            | map('map', 'default', '') | list
+            | map('zip', ['id','mtu','vrf','src','dst']) | list
+            | map('map', 'combine') | list
+            | map('combine', {'mtu': default_mtu}, attribute='mtu') | list
+            | zip(tunnel_ip_map) | map('flatten') | list
           }}
 
     - name: Debug combined device_tunnels
@@ -106,9 +112,9 @@
         commands:
           - >-
             {% if tunnel[2] is defined %}
-            ping vrf {{ tunnel[2] }} {{ remote_tunnel[5] }} size {{ tunnel[1] }} df-bit repeat 5
+            ping vrf {{ tunnel[2] }} {{ remote_tunnel[5] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
             {% else %}
-            ping {{ remote_tunnel[5] }} size {{ tunnel[1] }} df-bit repeat 5
+            ping {{ remote_tunnel[5] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
             {% endif %}
       delegate_to: "{{ device }}"
       register: ping_result
@@ -126,13 +132,13 @@
         report_rows: "{{ report_rows + [ {
           'device': device,
           'tunnel_id': tunnel[0],
-          'local_mtu': tunnel[1]|default('N/A'),
+          'local_mtu': tunnel[1]|default(default_mtu),
           'local_vrf': tunnel[2]|default('none'),
           'remote_device': remote_tunnel[6]|default('Not Found'),
           'remote_tunnel_id': remote_tunnel[0]|default('N/A'),
           'remote_mtu': remote_tunnel[1]|default('N/A'),
           'remote_vrf': remote_tunnel[2]|default('none'),
-          'mtu_match': 'Yes' if tunnel[1]|default('') == remote_tunnel[1]|default('') else 'No',
+          'mtu_match': 'Yes' if tunnel[1]|default(default_mtu) == remote_tunnel[1]|default(default_mtu) else 'No',
           'ping_result': (ping_result.stdout[0] is defined and 'Success rate is 100 percent' in ping_result.stdout[0]) | ternary('Pass','Fail')
         }] }}"
       loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') | default([]) }}"
@@ -146,4 +152,3 @@
     - name: Render CSV report
       template:
         src: tunnel_report.j2
-        dest: "{{ report_file }}"
