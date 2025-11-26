@@ -77,6 +77,7 @@
       loop: "{{ all_tunnels | subelements('tunnels') }}"
       loop_control:
         label: "{{ device }} Tunnel {{ tunnel[0] }}"
+
       tasks:
         - name: Find remote tunnel
           set_fact:
@@ -116,6 +117,7 @@
               'ping_result': ping_status|default('N/A')
             }] }}"
           when: remote_tunnel is defined
+
         - name: Handle missing remote tunnel
           set_fact:
             report_rows: "{{ report_rows + [ {
@@ -124,15 +126,3 @@
               'local_mtu': tunnel[1],
               'local_vrf': tunnel[2]|default('none'),
               'remote_device': 'Not Found',
-              'remote_tunnel_id': 'N/A',
-              'remote_mtu': 'N/A',
-              'remote_vrf': 'N/A',
-              'mtu_match': 'N/A',
-              'ping_result': 'N/A'
-            }] }}"
-          when: remote_tunnel is not defined
-
-    - name: Render CSV report
-      template:
-        src: tunnel_report.j2
-        dest: "{{ report_file }}"
