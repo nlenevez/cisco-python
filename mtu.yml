@@ -19,20 +19,28 @@
       set_fact:
         filtered_config: "{{ tunnel_config.stdout[0].split('\ninterface ') | reject('search', 'tunnel mode gre multipoint') | map('regex_replace', '^', 'interface ') | join('\n') }}"
 
+    - name: Debug filtered config
+      debug:
+        var: filtered_config
+
     - name: Get Tunnel IPs
       ios_command:
         commands:
           - show ip interface brief | include Tunnel
       register: tunnel_ips
 
-    - name: Parse Tunnel details
+    - name: Parse Tunnel details (improved regex)
       set_fact:
         tunnel_info: >-
           {{
             filtered_config | regex_findall(
-              'interface Tunnel(\\d+)\\n(?: .+\\n)*?ip mtu (\\d+)(?:\\n vrf forwarding (\\S+))?.*?tunnel source (\\S+).*?tunnel destination (\\S+)'
+              'interface Tunnel(\\d+)\\n(?: .+\\n)*?(?:ip mtu (\\d+))?.*?(?:vrf forwarding (\\S+))?.*?tunnel source (\\S+).*?tunnel destination (\\S+)'
             )
           }}
+
+    - name: Debug parsed tunnel_info
+      debug:
+        var: tunnel_info
 
     - name: Parse Tunnel IPs
       set_fact:
@@ -41,12 +49,20 @@
             tunnel_ips.stdout[0] | regex_findall('Tunnel(\\d+)\\s+(\\S+)')
           }}
 
+    - name: Debug parsed tunnel_ip_map
+      debug:
+        var: tunnel_ip_map
+
     - name: Combine Tunnel data
       set_fact:
         device_tunnels: >-
           {{
             tunnel_info | map('list') | list | zip(tunnel_ip_map) | map('flatten') | list
           }}
+
+    - name: Debug combined device_tunnels
+      debug:
+        var: device_tunnels
 
     - name: Save device tunnel info to localhost
       add_host:
@@ -66,19 +82,24 @@
       set_fact:
         report_rows: []
 
-    - name: Build tunnel pairs
+    - name: Build tunnel pairs safely
       set_fact:
         tunnel_pairs: "{{ hostvars['localhost'].all_tunnels | community.general.json_query('[].tunnels[]') | default([]) | list }}"
+
+    - name: Debug tunnel_pairs
+      debug:
+        var: tunnel_pairs
 
     - name: Find remote tunnel
       set_fact:
         remote_tunnel: "{{ tunnel_pairs | selectattr('3', 'equalto', item.1[4]) | list | first }}"
-      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') | default([]) }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
         device: "{{ item.0.device }}"
         tunnel: "{{ item.1 }}"
+      when: item.1 | length > 0
 
     - name: Run ping test
       ios_command:
@@ -92,33 +113,35 @@
       delegate_to: "{{ device }}"
       register: ping_result
       when: remote_tunnel is defined
-      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') | default([]) }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
         device: "{{ item.0.device }}"
         tunnel: "{{ item.1 }}"
+      when: item.1 | length > 0
 
     - name: Append row to report
       set_fact:
         report_rows: "{{ report_rows + [ {
           'device': device,
           'tunnel_id': tunnel[0],
-          'local_mtu': tunnel[1],
+          'local_mtu': tunnel[1]|default('N/A'),
           'local_vrf': tunnel[2]|default('none'),
           'remote_device': remote_tunnel[6]|default('Not Found'),
           'remote_tunnel_id': remote_tunnel[0]|default('N/A'),
           'remote_mtu': remote_tunnel[1]|default('N/A'),
           'remote_vrf': remote_tunnel[2]|default('none'),
-          'mtu_match': 'Yes' if tunnel[1] == remote_tunnel[1]|default('') else 'No',
+          'mtu_match': 'Yes' if tunnel[1]|default('') == remote_tunnel[1]|default('') else 'No',
           'ping_result': (ping_result.stdout[0] is defined and 'Success rate is 100 percent' in ping_result.stdout[0]) | ternary('Pass','Fail')
         }] }}"
-      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') | default([]) }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
         device: "{{ item.0.device }}"
         tunnel: "{{ item.1 }}"
+      when: item.1 | length > 0
 
     - name: Render CSV report
       template:
