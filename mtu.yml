@@ -49,15 +49,19 @@
           }}
 
     - name: Save device tunnel info to localhost
-      set_fact:
+      add_host:
+        name: localhost
         all_tunnels: "{{ (hostvars['localhost'].all_tunnels | default([])) + [{'device': inventory_hostname, 'tunnels': device_tunnels}] }}"
-      delegate_to: localhost
 
 - name: Validate MTUs and Ping
   hosts: localhost
   gather_facts: no
 
   tasks:
+    - name: Debug all_tunnels before processing
+      debug:
+        var: hostvars['localhost'].all_tunnels
+
     - name: Initialize report data
       set_fact:
         report_rows: []
