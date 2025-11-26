@@ -20,8 +20,7 @@
       set_fact:
         filtered_config: "{{ tunnel_config.stdout[0] }}"
 
-    - name: Debug filtered config
-      debug:
+    - debug:
         var: filtered_config
 
     - name: Get Tunnel IPs
@@ -30,45 +29,39 @@
           - show ip interface brief | include Tunnel
       register: tunnel_ips
 
-    - name: Debug tunnel IP output
-      debug:
+    - debug:
         var: tunnel_ips.stdout[0]
-
-    - name: Parse Tunnel details (regex-based)
-      set_fact:
-        tunnel_info: >-
-          {{
-            filtered_config | regex_findall(
-              'interface Tunnel(\\d+)[\\s\\S]*?(?:ip mtu (\\d+))?[\\s\\S]*?(?:ip vrf forwarding (\\S+))?[\\s\\S]*?tunnel source (\\S+)[\\s\\S]*?tunnel destination (\\S+)'
-            )
-          }}
-
-    - name: Debug parsed tunnel_info
-      debug:
-        var: tunnel_info
 
     - name: Parse Tunnel IPs
       set_fact:
         tunnel_ip_map: "{{ tunnel_ips.stdout[0] | regex_findall('Tunnel(\\d+)\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)') }}"
 
-    - name: Debug parsed tunnel_ip_map
-      debug:
+    - debug:
         var: tunnel_ip_map
 
-    - name: Combine Tunnel data and apply default MTU
+    # ✅ Fallback parser for tunnel details
+    - name: Parse Tunnel details manually
       set_fact:
         device_tunnels: >-
-          {{
-            tunnel_info | map('list') | list
-            | map('map', 'default', '') | list
-            | map('map', 'zip', ['id','mtu','vrf','src','dst']) | list
-            | map('map', 'combine') | list
-            | map('map', 'combine', {'mtu': default_mtu}, attribute='mtu') | list
-            | zip(tunnel_ip_map) | map('flatten') | list
-          }}
+          {% set tunnels = [] %}
+          {% for block in filtered_config.split('interface ')[1:] %}
+            {% set lines = block.split('\n') %}
+            {% set id = lines[0].replace('Tunnel','') %}
+            {% set mtu = default_mtu %}
+            {% set vrf = 'none' %}
+            {% set src = '' %}
+            {% set dst = '' %}
+            {% for l in lines %}
+              {% if 'ip mtu' in l %}{% set mtu = l.split()[2] %}{% endif %}
+              {% if 'ip vrf forwarding' in l %}{% set vrf = l.split()[3] %}{% endif %}
+              {% if 'tunnel source' in l %}{% set src = l.split()[2] %}{% endif %}
+              {% if 'tunnel destination' in l %}{% set dst = l.split()[2] %}{% endif %}
+            {% endfor %}
+            {% set _ = tunnels.append([id, mtu, vrf, src, dst]) %}
+          {% endfor %}
+          {{ tunnels }}
 
-    - name: Debug combined device_tunnels
-      debug:
+    - debug:
         var: device_tunnels
 
     - name: Save device tunnel info to localhost
@@ -81,8 +74,7 @@
   gather_facts: no
 
   tasks:
-    - name: Debug all_tunnels before processing
-      debug:
+    - debug:
         var: hostvars['localhost'].all_tunnels
 
     - name: Initialize report data
@@ -93,8 +85,7 @@
       set_fact:
         tunnel_pairs: "{{ hostvars['localhost'].all_tunnels | community.general.json_query('[].tunnels[]') | default([]) | list }}"
 
-    - name: Debug tunnel_pairs
-      debug:
+    - debug:
         var: tunnel_pairs
 
     - name: Find remote tunnel
@@ -113,9 +104,9 @@
         commands:
           - >-
             {% if tunnel[2] is defined %}
-            ping vrf {{ tunnel[2] }} {{ remote_tunnel[5] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
+            ping vrf {{ tunnel[2] }} {{ remote_tunnel[4] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
             {% else %}
-            ping {{ remote_tunnel[5] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
+            ping {{ remote_tunnel[4] }} size {{ tunnel[1]|default(default_mtu) }} df-bit repeat 5
             {% endif %}
       delegate_to: "{{ device }}"
       register: ping_result
@@ -151,5 +142,5 @@
 
     - name: Render CSV report
       template:
-        src: tunnel_report.j2
+        src: templates/tunnel_report.j2
         dest: "{{ report_file }}"
