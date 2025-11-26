@@ -48,9 +48,9 @@
             tunnel_info | map('list') | list | zip(tunnel_ip_map) | map('flatten') | list
           }}
 
-    - name: Save device tunnel info
+    - name: Save device tunnel info to localhost
       set_fact:
-        all_tunnels: "{{ (hostvars.localhost.all_tunnels | default([])) + [{'device': inventory_hostname, 'tunnels': device_tunnels}] }}"
+        all_tunnels: "{{ (hostvars['localhost'].all_tunnels | default([])) + [{'device': inventory_hostname, 'tunnels': device_tunnels}] }}"
       delegate_to: localhost
 
 - name: Validate MTUs and Ping
@@ -64,12 +64,12 @@
 
     - name: Build tunnel pairs
       set_fact:
-        tunnel_pairs: "{{ all_tunnels | community.general.json_query('[].tunnels[]') | list }}"
+        tunnel_pairs: "{{ hostvars['localhost'].all_tunnels | community.general.json_query('[].tunnels[]') | default([]) | list }}"
 
     - name: Find remote tunnel
       set_fact:
         remote_tunnel: "{{ tunnel_pairs | selectattr('3', 'equalto', item.1[4]) | list | first }}"
-      loop: "{{ all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
@@ -88,7 +88,7 @@
       delegate_to: "{{ device }}"
       register: ping_result
       when: remote_tunnel is defined
-      loop: "{{ all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
@@ -109,7 +109,7 @@
           'mtu_match': 'Yes' if tunnel[1] == remote_tunnel[1]|default('') else 'No',
           'ping_result': (ping_result.stdout[0] is defined and 'Success rate is 100 percent' in ping_result.stdout[0]) | ternary('Pass','Fail')
         }] }}"
-      loop: "{{ all_tunnels | subelements('tunnels') }}"
+      loop: "{{ hostvars['localhost'].all_tunnels | subelements('tunnels') }}"
       loop_control:
         label: "{{ item.0.device }} Tunnel {{ item.1[0] }}"
       vars:
