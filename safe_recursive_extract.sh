@@ -1,30 +1,26 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 IFS=$'\n\t'
 
 # Usage:
-#   ./safe_recursive_extract_v2.sh input.tar.gz output_dir [max_depth]
+#   ./safe_recursive_extract_v3.sh input.tar.gz output_dir [max_depth]
 #
-# Handles:
-#   .tar, .tgz, .tar.gz, and plain .gz (NOT .zip etc)
-# Security (untrusted):
-#   - Reject tar members with absolute paths or ../ traversal
-#   - Extract only regular files + directories (skip symlinks/hardlinks/devices/fifos)
-#   - Never preserve ownership/perms
-# Behavior:
-#   - Each archive extracts into "<archive>.extracted" folder next to it
-#   - Plain .gz is decompressed into "<name>.gunzipped" folder next to it
+# Supports: .tar .tgz .tar.gz and plain .gz
+# Untrusted hardening:
+#   - reject absolute paths and ../ traversal in tar member names
+#   - extract into controlled directory
+#   - remove symlinks/devices/fifos/sockets after extraction
 
 INPUT="${1:-}"
 OUTDIR="${2:-}"
 MAX_DEPTH="${3:-8}"
 
 if [[ -z "${INPUT}" || -z "${OUTDIR}" ]]; then
-  echo "Usage: $0 <input.tar|.tgz|.tar.gz|.gz> <output_dir> [max_depth]"
+  echo "Usage: $0 <input.tar|.tgz|.tar.gz|.gz> <output_dir> [max_depth]" >&2
   exit 1
 fi
 if [[ ! -f "${INPUT}" ]]; then
-  echo "Error: input file not found: ${INPUT}"
+  echo "Error: input file not found: ${INPUT}" >&2
   exit 1
 fi
 
@@ -32,99 +28,64 @@ mkdir -p "${OUTDIR}"
 OUTDIR="$(cd "${OUTDIR}" && pwd)"
 INPUT_ABS="$(cd "$(dirname "${INPUT}")" && pwd)/$(basename "${INPUT}")"
 
-STATEFILE="${OUTDIR}/.extract_v2.done"
+STATEFILE="${OUTDIR}/.extract_v3.done"
 touch "${STATEFILE}"
 
 already_done() { grep -Fxq "$1" "${STATEFILE}"; }
 mark_done()    { echo "$1" >> "${STATEFILE}"; }
 
-lower_ext() { echo "${1,,}"; }
+lc() { echo "${1,,}"; }
 
 is_tarish() {
-  local f; f="$(lower_ext "$1")"
+  local f; f="$(lc "$1")"
   [[ "$f" == *.tar || "$f" == *.tgz || "$f" == *.tar.gz ]]
 }
 
 is_plain_gz() {
-  local f; f="$(lower_ext "$1")"
+  local f; f="$(lc "$1")"
   [[ "$f" == *.gz && "$f" != *.tar.gz ]]
 }
 
-# List tar members (names only), robust for gzipped tars too
-tar_list_names() {
-  local archive="$1"
-  local a; a="$(lower_ext "$archive")"
-  if [[ "$a" == *.tgz || "$a" == *.tar.gz ]]; then
-    gzip -cd -- "$archive" | tar -tf -
-  else
-    tar -tf "$archive"
-  fi
-}
-
-# Validate tar paths against traversal/absolute/drive-letter
+# Reject tar entries that try to escape via absolute paths or ../ traversal
 validate_tar_paths() {
   local archive="$1"
+  # tar -tf works for .tar, .tgz, .tar.gz on GNU tar (common on Linux)
+  if ! tar -tf "$archive" >/dev/null 2>&1; then
+    echo "[-] tar cannot list (maybe corrupt / not tar?): $archive" >&2
+    return 1
+  fi
+
   while IFS= read -r name; do
-    [[ -z "$name" ]] && { echo "[-] Reject: empty member path in $archive"; return 1; }
-    [[ "$name" == /* ]] && { echo "[-] Reject: absolute path '$name' in $archive"; return 1; }
+    [[ -z "$name" ]] && { echo "[-] Reject: empty member path in $archive" >&2; return 1; }
+    [[ "$name" == /* ]] && { echo "[-] Reject: absolute path '$name' in $archive" >&2; return 1; }
     [[ "$name" == *"../"* || "$name" == "../"* || "$name" == *"..\\"* || "$name" == "..\\"* ]] && {
-      echo "[-] Reject: traversal path '$name' in $archive"; return 1;
+      echo "[-] Reject: traversal path '$name' in $archive" >&2; return 1;
     }
-    [[ "$name" =~ ^[A-Za-z]:\\ ]] && { echo "[-] Reject: windows drive path '$name' in $archive"; return 1; }
-  done < <(tar_list_names "$archive")
+    [[ "$name" =~ ^[A-Za-z]:\\ ]] && { echo "[-] Reject: windows drive path '$name' in $archive" >&2; return 1; }
+  done < <(tar -tf "$archive")
+
+  return 0
 }
 
-# Extract only regular files and directories (skip links/devices/fifos)
+cleanup_extracted_tree() {
+  local dir="$1"
+  # Remove symlinks
+  find "$dir" -type l -print -delete 2>/dev/null || true
+  # Remove device nodes, fifos, sockets (if any)
+  find "$dir" \( -type b -o -type c -o -type p -o -type s \) -print -delete 2>/dev/null || true
+}
+
 extract_tar_safely() {
   local archive="$1"
   local dest="$2"
   mkdir -p "$dest"
 
-  validate_tar_paths "$archive"
+  validate_tar_paths "$archive" || return 1
 
-  # Get verbose listing so we can filter types.
-  # GNU tar -tvf format can vary; we use the first char of mode field.
-  local a; a="$(lower_ext "$archive")"
-  local listing
-  if [[ "$a" == *.tgz || "$a" == *.tar.gz ]]; then
-    listing="$(gzip -cd -- "$archive" | tar -tvf -)"
-  else
-    listing="$(tar -tvf "$archive")"
-  fi
+  # Extract (do not preserve owner/perms). GNU tar:
+  tar -xf "$archive" -C "$dest" --no-same-owner --no-same-permissions
 
-  # Extract names for regular files/dirs only.
-  # We parse from the end by removing the first 5 fields (mode, user/group, size, date, time/year),
-  # then keeping the rest as the filename. This works for GNU tar typical output.
-  mapfile -t safe_paths < <(
-    printf '%s\n' "$listing" | awk '
-      {
-        t=substr($1,1,1);
-        if (t=="-" || t=="d") {
-          name="";
-          for (i=6;i<=NF;i++) name = name (i==6?"":" ") $i;
-          print name
-        }
-      }'
-  )
-
-  if [[ "${#safe_paths[@]}" -eq 0 ]]; then
-    echo "[-] Nothing safe to extract from $archive"
-    return 0
-  fi
-
-  if [[ "$a" == *.tgz || "$a" == *.tar.gz ]]; then
-    gzip -cd -- "$archive" | tar -xvf - \
-      -C "$dest" \
-      --no-same-owner --no-same-permissions \
-      --warning=no-unknown-keyword \
-      "${safe_paths[@]}" >/dev/null
-  else
-    tar -xvf "$archive" \
-      -C "$dest" \
-      --no-same-owner --no-same-permissions \
-      --warning=no-unknown-keyword \
-      "${safe_paths[@]}" >/dev/null
-  fi
+  cleanup_extracted_tree "$dest"
 }
 
 decompress_gz_safely() {
@@ -137,47 +98,62 @@ decompress_gz_safely() {
   base="${base%.gz}"
   out="${dest}/${base}"
 
-  # avoid overwrite
   if [[ -e "$out" ]]; then
     local i=1
     while [[ -e "${out}.${i}" ]]; do ((i++)); done
     out="${out}.${i}"
   fi
 
-  gzip -cd -- "$gz" > "$out"
+  if ! gzip -cd -- "$gz" > "$out"; then
+    echo "[-] gunzip failed: $gz" >&2
+    rm -f "$out" 2>/dev/null || true
+    return 1
+  fi
+}
+
+unique_dir() {
+  local d="$1"
+  if [[ ! -e "$d" ]]; then
+    echo "$d"
+    return 0
+  fi
+  local i=1
+  while [[ -e "${d}.${i}" ]]; do ((i++)); done
+  echo "${d}.${i}"
 }
 
 echo "[*] Output: $OUTDIR"
 echo "[*] Max depth: $MAX_DEPTH"
 echo "[*] Top-level: $INPUT_ABS"
 
-# Put the initial input into its own folder
 TOP_DIR="${OUTDIR}/top.extracted"
 mkdir -p "$TOP_DIR"
 
+# Extract/decompress top-level
 if ! already_done "$INPUT_ABS"; then
   if is_tarish "$INPUT_ABS"; then
     echo "[*] Extract top tar-ish -> $TOP_DIR"
-    extract_tar_safely "$INPUT_ABS" "$TOP_DIR"
+    if ! extract_tar_safely "$INPUT_ABS" "$TOP_DIR"; then
+      echo "[!] Top-level extraction failed (archive rejected or unreadable): $INPUT_ABS" >&2
+      exit 2
+    fi
     mark_done "$INPUT_ABS"
   elif is_plain_gz "$INPUT_ABS"; then
-    echo "[*] Decompress top gz -> $TOP_DIR"
-    decompress_gz_safely "$INPUT_ABS" "$TOP_DIR"
+    echo "[*] Gunzip top .gz -> $TOP_DIR"
+    decompress_gz_safely "$INPUT_ABS" "$TOP_DIR" || exit 2
     mark_done "$INPUT_ABS"
   else
-    echo "Error: unsupported type: $INPUT_ABS"
+    echo "Error: unsupported type: $INPUT_ABS" >&2
     exit 1
   fi
 fi
 
-# Queue-based expansion by depth
+# Iterate passes (bounded by MAX_DEPTH but will stop early if no new work)
 for ((depth=1; depth<=MAX_DEPTH; depth++)); do
-  echo "[*] Pass $depth/$MAX_DEPTH: scanning for .tar/.tgz/.tar.gz/.gz ..."
+  echo "[*] Pass $depth/$MAX_DEPTH: scanning for nested archives..."
 
-  # Robust extension match (case-insensitive) via -iregex
   mapfile -d '' files < <(
-    find "$OUTDIR" -type f \
-      -iregex '.*\.\(tar\|tgz\|tar\.gz\|gz\)$' -print0
+    find "$OUTDIR" -type f \( -iname "*.tar" -o -iname "*.tgz" -o -iname "*.tar.gz" -o -iname "*.gz" \) -print0
   )
 
   new_work=0
@@ -190,37 +166,29 @@ for ((depth=1; depth<=MAX_DEPTH; depth++)); do
     bn="$(basename "$f_abs")"
 
     if is_tarish "$f_abs"; then
-      dest="${parent}/${bn}.extracted"
-      # unique folder
-      if [[ -e "$dest" ]]; then
-        i=1; while [[ -e "${dest}.${i}" ]]; do ((i++)); done
-        dest="${dest}.${i}"
-      fi
-
+      dest="$(unique_dir "${parent}/${bn}.extracted")"
       echo "    [+] Extract: $f_abs"
       echo "        -> $dest"
       if extract_tar_safely "$f_abs" "$dest"; then
         mark_done "$f_abs"
         new_work=1
       else
-        echo "    [!] Skipped suspicious tar: $f_abs"
-        mark_done "$f_abs"
+        echo "    [!] Skipped/rejected: $f_abs" >&2
+        mark_done "$f_abs" # don't retry forever
       fi
 
     elif is_plain_gz "$f_abs"; then
-      dest="${parent}/${bn}.gunzipped"
-      if [[ -e "$dest" ]]; then
-        i=1; while [[ -e "${dest}.${i}" ]]; do ((i++)); done
-        dest="${dest}.${i}"
-      fi
-
+      dest="$(unique_dir "${parent}/${bn}.gunzipped")"
       echo "    [+] Gunzip: $f_abs"
       echo "        -> $dest"
-      decompress_gz_safely "$f_abs" "$dest"
-      mark_done "$f_abs"
-      new_work=1
+      if decompress_gz_safely "$f_abs" "$dest"; then
+        mark_done "$f_abs"
+        new_work=1
+      else
+        echo "    [!] Gunzip failed: $f_abs" >&2
+        mark_done "$f_abs"
+      fi
     else
-      # Shouldn't happen due to regex, but just in case:
       mark_done "$f_abs"
     fi
   done
