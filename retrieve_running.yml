@@ -1,0 +1,89 @@
+---
+- name: "PLAY 1: Backup router/switch configs"
+  hosts: cisco_devices
+  connection: network_cli
+  tasks:
+    - name: "TASK 1: Get running-config"
+      ios_command:
+        commands: "show running-config"
+      register: running_config
+
+    - name: "TASK 2: Copy running_config to configs directory"
+      copy:
+        content: "{{ running_config.stdout[0] | regex_replace('!Time.*', '') | trim }}\n"
+        dest: "configs/{{ inventory_hostname }}.txt"
+
+- name: "PLAY 2: Retrieve routes from core switches"
+  hosts: cisco_devices
+  connection: network_cli
+  gather_facts: no
+  tasks:
+    - name: "TASK 1: Get route table (vrf default)"
+      ios_command:
+        commands: "show ip route"
+      register: route_table
+
+    - name: "TASK 2: Normalise and strip timers (vrf default)"
+      set_fact:
+        clean_route_table: >-
+          {{ route_table.stdout[0]
+            | regex_replace(',\s+(?:\d+y)?(?:\d+w)?(?:\d+d)?(?:\d+h)?(?:\d{2}:\d{2}:\d{2})+,', ',')
+          }}
+
+    - name: "TASK 3: Save route table (vrf default) to routes directory"
+      copy:
+        content: "{{ clean_route_table }}\n"
+        dest: "routes/{{ inventory_hostname }}-default.txt"
+
+    - name: "TASK 4: Retrieve VRF list"
+      ios_command:
+        commands: "show vrf"
+      register: vrf_output
+
+    - name: "TASK 5: Initialise VRF structure"
+      set_fact:
+        vrf_list: []
+
+    - name: "TASK 6: Extract VRF names from devices"
+      no_log: True
+      set_fact:
+        vrf_list: "{{ vrf_list + [item.split()[0]] }}"
+      loop: "{{ vrf_output.stdout_lines[0][1:] }}"
+      when: item is string and item.split() | length > 0 and (
+         (item[0:2] == '  ' and item[2] != ' ') or
+         (item[0:1] != ' ')
+        )
+
+    - name: "TASK 7: Output VRF list"
+      debug:
+          var: vrf_list
+   
+    - name: "TASK 8: Get each VRF route table"
+      ios_command:
+         commands: "show ip route vrf {{ item }}"
+      loop: "{{ vrf_list }}"
+      register: vrf_route_table
+
+    - name: "TASK 8: Save VRF route tables to routes directory"
+      no_log: True
+      copy:
+        content: "{{ item.stdout[0] }}\n"
+        dest: "routes/{{ inventory_hostname }}-{{ item.item }}.txt"
+      loop: "{{ vrf_route_table.results }}"
+      ignore_errors: true
+
+    - name: "TASK 9: Retrieve inventory and show version"
+      tags:
+        - inventory
+      ios_command:
+        commands:
+          - "show version"
+          - "show inventory"
+      register: inventory
+
+    - name: "TASK 10: Save inventory details to inventory directory"
+      tags:
+        - inventory
+      copy:
+        content: "{{ inventory.stdout[0] }}\n\n{{ inventory.stdout[1] }}\n"
+        dest: "inventory/{{ inventory_hostname }}.txt"
