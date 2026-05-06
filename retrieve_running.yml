@@ -22,18 +22,24 @@
       ios_command:
         commands: "show ip route"
       register: route_table
+      when: "'edge' not in inventory_hostname"
 
-    - name: "TASK 2: Normalise and strip timers (vrf default)"
-      set_fact:
-        clean_route_table: >-
-          {{ route_table.stdout[0]
-            | regex_replace(',\s+(?:\d+y)?(?:\d+w)?(?:\d+d)?(?:\d+h)?(?:\d{2}:\d{2}:\d{2})+,', ',')
-          }}
-
-    - name: "TASK 3: Save route table (vrf default) to routes directory"
+    - name: "TASK 2: Save raw route table (vrf default)"
       copy:
-        content: "{{ clean_route_table }}\n"
+        content: "{{ route_table.stdout[0] }}\n"
         dest: "routes/{{ inventory_hostname }}-default.txt"
+      when: "'edge' not in inventory_hostname"
+
+    - name: "TASK 3: Filter timers from route table (vrf default)"
+      command: "python3 {{ playbook_dir }}/filter_routes.py routes/{{ inventory_hostname }}-default.txt"
+      register: filtered_output
+      when: "'edge' not in inventory_hostname"
+
+    - name: "TASK 4: Save filtered route table (vrf default)"
+      copy:
+        content: "{{ filtered_output.stdout }}\n"
+        dest: "routes/{{ inventory_hostname }}-default.txt"
+      when: "'edge' not in inventory_hostname"
 
     - name: "TASK 4: Retrieve VRF list"
       ios_command:
@@ -72,7 +78,29 @@
       loop: "{{ vrf_route_table.results }}"
       ignore_errors: true
 
-    - name: "TASK 9: Retrieve inventory and show version"
+    - name: "TASK 9: Save VRF route tables to routes directory"
+      no_log: True
+      copy:
+        content: "{{ item.stdout[0] }}\n"
+        dest: "routes/{{ inventory_hostname }}-{{ item.item }}.txt"
+      loop: "{{ vrf_route_table.results }}"
+      ignore_errors: true
+
+    - name: "TASK 10: Filter timers from VRF route tables"
+      command: "python3 {{ playbook_dir }}/filter_routes.py routes/{{ inventory_hostname }}-{{ item.item }}.txt"
+      loop: "{{ vrf_route_table.results }}"
+      register: filtered_vrf_output
+      ignore_errors: true
+
+    - name: "TASK 11: Save filtered VRF route tables"
+      no_log: True
+      copy:
+        content: "{{ item.stdout }}\n"
+        dest: "routes/{{ inventory_hostname }}-{{ item.item.item }}.txt"
+      loop: "{{ filtered_vrf_output.results }}"
+      ignore_errors: true
+
+    - name: "TASK 12: Retrieve inventory and show version"
       tags:
         - inventory
       ios_command:
@@ -81,7 +109,7 @@
           - "show inventory"
       register: inventory
 
-    - name: "TASK 10: Save inventory details to inventory directory"
+    - name: "TASK 13: Save inventory details to inventory directory"
       tags:
         - inventory
       copy:
