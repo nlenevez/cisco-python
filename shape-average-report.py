@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Parse Cisco configs for 'shape average' and print, on one line, the shaped
+rate plus the policy-map it lives in, the interface the policy is attached to,
+and that interface's description.
+
+Handles hierarchical (parent/child) policy-maps: a shaper in a child policy is
+reported against whatever interface the parent is attached to.
+
+Usage:
+    ./shape-average-report.py < router-config.txt
+    ./shape-average-report.py config1.txt config2.txt
+"""
+import re
+import sys
+
+RE_POLICY = re.compile(r'^policy-map\s+(?:type\s+\S+\s+)?(\S+)')
+RE_INTF   = re.compile(r'^interface\s+(\S+)')
+RE_CLASS  = re.compile(r'^\s+class\s+(\S+)')
+RE_SHAPE  = re.compile(r'^\s*shape\s+average\s+(percent\s+)?(\d+)\s*(\S*)')
+RE_DESC   = re.compile(r'^\s+description\s+(.*)')
+RE_SVCPOL = re.compile(r'^\s+service-policy\s+(?:type\s+\S+\s+)?(?:(input|output)\s+)?(\S+)')
+
+MULT = {'bps': 1, 'kbps': 1e3, 'mbps': 1e6, 'gbps': 1e9}
+
+
+def parse(lines):
+    policies, interfaces = {}, {}
+    cur_pol = cur_intf = cur_class = None
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.strip() == '!':                      # '!' closes the current block
+            cur_pol = cur_intf = cur_class = None
+            continue
+
+        if not line[0].isspace():                    # top-level line
+            cur_pol = cur_intf = cur_class = None
+            m = RE_POLICY.match(line)
+            if m:
+                cur_pol = m.group(1)
+                policies.setdefault(cur_pol, {'shapes': [], 'children': set()})
+                continue
+            m = RE_INTF.match(line)
+            if m:
+                cur_intf = m.group(1)
+                interfaces.setdefault(cur_intf, {'desc': '', 'policies': []})
+            continue
+
+        if cur_pol:                                  # inside a policy-map
+            m = RE_CLASS.match(line)
+            if m:
+                cur_class = m.group(1)
+                continue
+            m = RE_SHAPE.match(line)
+            if m:
+                pct, val, unit = m.group(1), int(m.group(2)), m.group(3)
+                policies[cur_pol]['shapes'].append(
+                    (cur_class or '-', line.strip(), val, unit, bool(pct)))
+                continue
+            m = RE_SVCPOL.match(line)                # nested child policy
+            if m:
+                policies[cur_pol]['children'].add(m.group(2))
+        elif cur_intf:                               # inside an interface
+            m = RE_DESC.match(line)
+            if m:
+                interfaces[cur_intf]['desc'] = m.group(1).strip()
+                continue
+            m = RE_SVCPOL.match(line)
+            if m:
+                interfaces[cur_intf]['policies'].append((m.group(1) or '-', m.group(2)))
+
+    return policies, interfaces
+
+
+def attachments(policy, interfaces, parents, seen=None):
+    """Interfaces this policy is attached to, directly or via a parent policy."""
+    seen = seen or set()
+    if policy in seen:
+        return []
+    seen.add(policy)
+
+    out = [(name, d, i['desc']) for name, i in interfaces.items()
+           for d, p in i['policies'] if p == policy]
+    for parent in parents.get(policy, ()):
+        out.extend(attachments(parent, interfaces, parents, seen))
+    return out
+
+
+def rate_mbps(val, unit, is_pct):
+    if is_pct:
+        return f'{val}%'
+    mult = MULT.get(unit.lower(), 1) if unit.isalpha() else 1
+    return f'{val * mult / 1e6:g}'
+
+
+def main():
+    lines = open(sys.argv[1]).readlines() if len(sys.argv) > 1 else sys.stdin.readlines()
+    if len(sys.argv) > 2:
+        for extra in sys.argv[2:]:
+            lines += open(extra).readlines()
+
+    policies, interfaces = parse(lines)
+
+    parents = {}
+    for name, pol in policies.items():
+        for child in pol['children']:
+            parents.setdefault(child, set()).add(name)
+
+    rows = []
+    for pname, pol in policies.items():
+        for cls, raw, val, unit, is_pct in pol['shapes']:
+            attached = attachments(pname, interfaces, parents) or [('(unattached)', '-', '')]
+            for intf, direction, desc in attached:
+                rows.append([intf, direction, desc or '(no description)',
+                             pname, cls, raw, rate_mbps(val, unit, is_pct)])
+
+    if not rows:
+        sys.exit(0)
+
+    hdr = ['INTERFACE', 'DIR', 'DESCRIPTION', 'POLICY-MAP', 'CLASS', 'SHAPE', 'MBPS']
+    widths = [max(len(r[i]) for r in [hdr] + rows) for i in range(len(hdr))]
+    for row in [hdr] + sorted(rows):
+        print('  '.join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
+
+
+if __name__ == '__main__':
+    main()
