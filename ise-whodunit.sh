@@ -3,16 +3,25 @@
 # ise-tacacs-parse.sh - extract UserName, device IP, and CmdAV from Cisco ISE
 #                       TACACS+ command-accounting syslogs.
 #
-# Input is raw syslog as received from ISE. ISE fragments long accounting
-# messages into several syslog lines; each carries the same header triple
+# Input is raw syslog as received from ISE. Real observed line (segment 0 of
+# a 2-segment message; the receiving daemon has stripped the <PRI>):
 #
-#       CISE_<Category> <message-id> <total-segments> <segment-number>
+#   Aug 25 15:22:19 ISE001 CISE_TACACS_Accounting 00039283948 2 0 \
+#     2026-08-25 12:23:34 +10:00 003892940 3300 NOTICE Tacacs-Accounting: \
+#     TACACS+ Accounting with Command, User=..., CmdAV=..., NAS-IP-Address=...
+#
+# ISE fragments long accounting messages into several syslog lines; each
+# carries the same header:
+#
+#       [<PRI>]<syslog ts> <host> CISE_<Category> <msg-id> <total-seg> <seg-no> ...
 #
 # so a single logical record (and its CmdAV / Device IP Address) can be
-# spread across multiple lines. This script reassembles all segments that
-# share a message-id, in segment order, before parsing - segments may even
-# arrive out of order. Incomplete messages (e.g. a dropped UDP segment) are
-# flushed best-effort at end of input.
+# spread across multiple lines. This script anchors on the "CISE_" mnemonic
+# - so it is independent of the <PRI>/timestamp/host prefix and of the
+# message-id length - then reassembles all segments that share a message-id,
+# in segment order, before parsing. Segments may arrive out of order.
+# Incomplete messages (e.g. a dropped UDP segment) are flushed best-effort
+# at end of input.
 #
 # Reads file(s) named on the command line, or stdin if none. Emits one
 # tab-separated record per command-accounting message:
@@ -25,6 +34,10 @@
 # Field-name fallbacks cover common ISE variations:
 #   username : User      -> UserName
 #   device   : NAS-IP-Address -> Device IP Address -> NAS-IP
+#
+# NB: attributes are assumed ", "-separated (comma-space) and the command
+# attribute assumed named CmdAV. If your logs differ, adjust split(msg,...)
+# and the "CmdAV" lookup below.
 #
 # Usage:
 #   ise-tacacs-parse.sh /var/log/remote/ise.log
@@ -73,7 +86,8 @@ function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd) {
 
 {
     # Anchor on the ISE mnemonic so we are independent of whatever
-    # timestamp/host prefix the receiving syslog daemon prepends.
+    # timestamp/host prefix the receiving syslog daemon prepends, and of
+    # the message-id length.
     p = index($0, "CISE_")
     if (p == 0) next
     rest = substr($0, p)
