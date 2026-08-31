@@ -1,7 +1,17 @@
 #!/bin/sh
+# ============================ CONFIG (edit me) ==============================
+# Usernames to exclude from the output, space- or comma-separated. Leave empty
+# to exclude nobody. Matching is exact (case-sensitive). Can also be supplied
+# from the environment, e.g.
+#     EXCLUDE_USERS="rancid svc-mon" ./ise-tacacs-parse.sh ise.log
+EXCLUDE_USERS="${EXCLUDE_USERS:-}"
+
+# Log file to read when nothing is piped in and no file argument is given.
+DEFAULT_LOG="${DEFAULT_LOG:-/var/log/tacacs-log}"
+# ===========================================================================
 #
-# ise-tacacs-parse.sh - extract UserName, device IP, and command from Cisco
-#                       ISE TACACS+ command-accounting syslogs.
+# ise-tacacs-parse.sh - extract timestamp, UserName, device IP, and command
+#                       from Cisco ISE TACACS+ command-accounting syslogs.
 #
 # Input is raw syslog as received from ISE. Real observed line (segment 0 of
 # a 2-segment message; the receiving daemon has stripped the <PRI>):
@@ -21,11 +31,14 @@
 # prefix and of msg-id length), reassembles segments sharing a message-id in
 # order, then extracts fields. Segments may arrive out of order; incomplete
 # messages are flushed best-effort at EOF (segment 0 usually already carries
-# User/CmdSet/Device IP, so records still emit even if a later segment is lost).
+# the timestamp/User/CmdSet/Device IP, so records still emit if a later
+# segment is lost).
 #
-# Output: one tab-separated record per command-accounting message:
-#       <username>\t<device_ip>\t<command>
-# Only messages carrying a non-empty command attribute are emitted.
+# Output: one line per command-accounting message:
+#       YY-MM-DD HH:MM:SS [username] [device-ip] [command]
+# The timestamp is ISE's own record timestamp, shortened to a 2-digit year.
+# Only messages carrying a non-empty command attribute are emitted, and any
+# user listed in EXCLUDE_USERS is dropped.
 #
 # Robustness:
 #   - Attributes split on "," and trimmed, so both ", " and "," delimiters work.
@@ -37,31 +50,44 @@
 #     bracket wrapper is unwrapped, the inner CmdAv= marker and a trailing
 #     <cr> terminator stripped, leaving the bare command. Candidate top-level
 #     fields (first present wins) default to "CmdSet CmdAV CmdAv Cmd";
-#     override without editing:
-#
-#         ISE_CMD_FIELD="CmdAV CmdSet" ise-tacacs-parse.sh ise.log
-#
-#     To see the real attribute names in your logs (no values printed):
-#         grep -m1 CISE_TACACS_Accounting ise.log \
-#           | awk -F, '{for(i=1;i<=NF;i++){e=index($i,"=");\
-#             if(e)print substr($i,1,e-1)}}'
+#     override with  ISE_CMD_FIELD="CmdAV CmdSet" ...
 #
 # Troubleshooting: set ISE_DEBUG=1 to print a per-stage counter summary to
-# stderr, e.g.
-#         ISE_DEBUG=1 ise-tacacs-parse.sh logfile.txt >/dev/null
+# stderr, e.g.  ISE_DEBUG=1 ise-tacacs-parse.sh logfile.txt >/dev/null
 #
 # Usage:
-#   ise-tacacs-parse.sh /var/log/remote/ise.log
-#   grep npl ise.log | ise-tacacs-parse.sh | sort -u
+#   ise-tacacs-parse.sh                     # reads DEFAULT_LOG (no pipe/args)
+#   ise-tacacs-parse.sh /var/log/tacacs-log.0
+#   cat /var/log/tacacs-log | ise-tacacs-parse.sh
+#   grep npl ise.log | ise-tacacs-parse.sh | sort
 #   tail -F /var/log/remote/ise.log | ise-tacacs-parse.sh
 #
 set -eu
 
-awk -v CMDKEYS="${ISE_CMD_FIELD:-CmdSet CmdAV CmdAv Cmd}" -v DEBUG="${ISE_DEBUG:-}" '
+# With no file arguments and nothing piped in (stdin is a terminal), fall back
+# to DEFAULT_LOG. A pipe or redirect on stdin is read as usual; explicit file
+# arguments always win.
+if [ "$#" -eq 0 ] && [ -t 0 ]; then
+    if [ ! -r "$DEFAULT_LOG" ]; then
+        echo "ise-tacacs-parse.sh: nothing piped in and default log '$DEFAULT_LOG' is not readable" >&2
+        exit 1
+    fi
+    set -- "$DEFAULT_LOG"
+fi
+
+awk -v CMDKEYS="${ISE_CMD_FIELD:-CmdSet CmdAV CmdAv Cmd}" \
+    -v EXCLUDE="${EXCLUDE_USERS:-}" \
+    -v DEBUG="${ISE_DEBUG:-}" '
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 
+BEGIN {
+    ne = split(EXCLUDE, ea, /[ ,]+/)
+    for (ei = 1; ei <= ne; ei++)
+        if (ea[ei] != "") EXSET[ea[ei]] = 1
+}
+
 # Parse one fully-reassembled message body and print the wanted fields.
-function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd, cn, ck, ci) {
+function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd, cn, ck, ci, ts) {
     d_emitcall++
     n = split(msg, attrs, /,/)          # bare comma; ", " handled by trim()
     for (i = 1; i <= n; i++) {
@@ -76,6 +102,12 @@ function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd, c
         else          key = left
         kv[key] = val
     }
+
+    # ISE record timestamp leads the body: YYYY-MM-DD HH:MM:SS.mmm +TZ
+    # keep YY-MM-DD HH:MM:SS (drop century, fractional seconds and TZ)
+    ts = ""
+    if (match(msg, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/))
+        ts = substr(msg, RSTART + 2, RLENGTH - 2)
 
     user = ("User" in kv) ? kv["User"] : \
            (("UserName" in kv) ? kv["UserName"] : "")
@@ -92,9 +124,7 @@ function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd, c
     for (ci = 1; ci <= cn; ci++)
         if (ck[ci] in kv && kv[ck[ci]] != "") { cmd = kv[ck[ci]]; break }
 
-    # ISE wraps the command as an AV-set:  CmdSet=[ CmdAV=show running-config <cr> ]
-    # unwrap the brackets and drop the inner CmdAv= marker(s) to leave the
-    # bare command line
+    # unwrap  CmdSet=[ CmdAV=show running-config <cr> ]  to the bare command
     if (cmd ~ /^\[/) {
         sub(/^\[[ \t]*/, "", cmd)
         sub(/[ \t]*\]$/, "", cmd)
@@ -103,11 +133,13 @@ function emit(msg,   n, attrs, i, eq, left, val, m, w, key, kv, user, ip, cmd, c
     }
     sub(/[ \t]*<cr>[ \t]*$/, "", cmd)   # drop ISE trailing terminator marker
     cmd = trim(cmd)
+
     if (user == "") d_nouser++
-    if (cmd == "") { d_nocmd++; return }   # command-accounting records only
+    if (cmd == "") { d_nocmd++; return }        # command-accounting records only
+    if (user in EXSET) { d_excluded++; return } # user on the exclude list
 
     d_emitted++
-    printf "%s\t%s\t%s\n", user, ip, cmd
+    printf "%s [%s] [%s] [%s]\n", ts, user, ip, cmd
 }
 
 {
@@ -157,9 +189,9 @@ END {
     if (DEBUG != "") {
         printf "ISE_DEBUG lines=%d no-CISE_=%d header-mismatch=%d anchored=%d " \
                "single-seg=%d multi-completed=%d multi-flushed-at-eof=%d " \
-               "emit-calls=%d emitted=%d skipped-no-command=%d no-user=%d\n", \
+               "emit-calls=%d emitted=%d excluded=%d skipped-no-command=%d no-user=%d\n", \
                d_lines, d_nocise, d_noanchor, d_anchored, d_single, d_completed, \
-               d_flushed, d_emitcall, d_emitted, d_nocmd, d_nouser > "/dev/stderr"
+               d_flushed, d_emitcall, d_emitted, d_excluded, d_nocmd, d_nouser > "/dev/stderr"
     }
 }
 ' "$@"
