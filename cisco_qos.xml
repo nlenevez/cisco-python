@@ -1,0 +1,43 @@
+<interface>
+        <name>Cisco QoS Data Gathering</name>
+        <description>Queries a cisco router for stuff.</description>
+        <script_path>|path_cacti|/scripts/cisco_qos.pl</script_path>
+        <arg_index>index</arg_index>
+        <arg_query>query</arg_query>
+        <arg_get>get</arg_get>
+        <arg_prepend>|host_hostname| |host_snmp_community|</arg_prepend>
+        <output_delimeter>!</output_delimeter>
+        <index_order>index</index_order>
+        <fields>
+                <index>
+                        <name>index</name>
+                        <direction>input</direction>
+                        <query_name>index</query_name>
+                </index>
+                <interface>
+                        <name>Interface</name>
+                        <direction>input</direction>
+                        <query_name>interface</query_name>
+                </interface>
+                <policymap>
+                        <name>Policy-Map</name>
+                        <direction>input</direction>
+                        <query_name>policymap</query_name>
+                </policymap>
+                <class>
+                        <name>Class</name>
+                        <direction>input</direction>
+                        <query_name>class</query_name>
+                </class>
+                <bytes>
+                        <name>Bytes</name>
+                        <direction>output</direction>
+                        <query_name>bytes</query_name>
+                </bytes>
+                <drops>
+                        <name>Drops</name>
+                        <direction>output</direction>
+                        <query_name>drops</query_name>
+                </drops>
+        </fields>
+</interface>
