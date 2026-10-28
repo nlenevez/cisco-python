@@ -33,6 +33,8 @@
 # 28/10/2026 - version 0.60, for Cacti 1.2
 # - SNMP v1, v2c and v3. The data query passes every SNMP setting of the device
 #   (see cisco_qos.xml), so the script uses whatever the device is configured with.
+#   Settings arrive as key=value: Cacti drops empty arguments from the command
+#   line, which would shift positional ones (e.g. a v3 device's blank community).
 # - net-snmp is run without a shell, so passwords and communities containing
 #   $ ! ' etc. are passed through safely.
 # - Classes are tied to their policy-map through cbQosParentObjectsIndex instead
@@ -50,18 +52,38 @@ use warnings;
 
 my $usage = <<'EOT';
 usage:
-  cisco_qos.pl HOST VERSION COMMUNITY USERNAME AUTHPASS AUTHPROTO PRIVPASS PRIVPROTO CONTEXT ENGINEID PORT TIMEOUT_MS index
-  cisco_qos.pl ... query {index|interface|policymap|class|all}
-  cisco_qos.pl ... get {bytes|drops} INDEX
+  cisco_qos.pl host=HOST ver=1|2|3 [comm=..] [user=..] [authpw=..] [authproto=..]
+               [privpw=..] [privproto=..] [context=..] [engine=..] [port=..] [timeout=MS] ACTION
 
-  The twelve SNMP arguments come from the data query's <arg_prepend> (cisco_qos.xml).
-  VERSION is 1, 2 or 3. Pass '' for settings that don't apply.
+  ACTION:  index
+           num_indexes
+           query {index|interface|policymap|class|all}
+           get {bytes|drops} INDEX
+
+  The data query's <arg_prepend> (cisco_qos.xml) passes every setting as key=value.
+  Cacti drops empty arguments, so values are never passed bare.
 EOT
 
-die $usage if @ARGV < 13;
+my %opt;
+while (@ARGV && $ARGV[0] =~ /^(host|ver|comm|user|authpw|authproto|privpw|privproto|context|engine|port|timeout)=(.*)$/s) {
+	$opt{$1} = $2;
+	shift @ARGV;
+}
+die $usage unless defined $opt{host} && $opt{host} ne '' && @ARGV;
 
-my ($host, $version, $comm, $user, $auth_pass, $auth_proto, $priv_pass,
-	$priv_proto, $context, $engine_id, $port, $timeout_ms) = splice(@ARGV, 0, 12);
+my $host       = $opt{host};
+my $version    = defined $opt{ver}       ? $opt{ver}       : '2';
+my $comm       = defined $opt{comm}      ? $opt{comm}      : '';
+my $user       = defined $opt{user}      ? $opt{user}      : '';
+my $auth_pass  = defined $opt{authpw}    ? $opt{authpw}    : '';
+my $auth_proto = defined $opt{authproto} ? $opt{authproto} : '';
+my $priv_pass  = defined $opt{privpw}    ? $opt{privpw}    : '';
+my $priv_proto = defined $opt{privproto} ? $opt{privproto} : '';
+my $context    = defined $opt{context}   ? $opt{context}   : '';
+my $engine_id  = defined $opt{engine}    ? $opt{engine}    : '';
+my $port       = defined $opt{port}      ? $opt{port}      : '';
+my $timeout_ms = defined $opt{timeout}   ? $opt{timeout}   : '';
+
 my ($action1, $action2, $theindex) = @ARGV;
 $action2  = '' unless defined $action2;
 $theindex = '' unless defined $theindex;
@@ -284,6 +306,8 @@ sub get_counter {
 
 if ($action1 eq 'index') {
 	print "$_->{index}\n" foreach classes();
+} elsif ($action1 eq 'num_indexes') {
+	print scalar(my @c = classes()), "\n";
 } elsif ($action1 eq 'query') {
 	foreach my $c (classes()) {
 		if ($action2 eq 'index') {
